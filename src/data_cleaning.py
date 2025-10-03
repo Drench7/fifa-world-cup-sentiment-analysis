@@ -1,3 +1,4 @@
+src/data_cleaning.py
 import pandas as pd
 import re
 import nltk
@@ -174,3 +175,14 @@ if __name__ == "__main__":
     cleaned = cleaner.clean_text(sample_text)
     print("Original:", sample_text)
     print("Cleaned:", cleaned)
+
+
+# Add this function at the end of src/data_cleaning.py
+
+def clean_tweet_data(df, text_column=None):
+    """
+    Clean tweet data - wrapper function for Streamlit app compatibility
+    """
+    cleaner = DataCleaner()
+    df_clean = cleaner.clean_dataset(df, text_column)
+    return df_clean
