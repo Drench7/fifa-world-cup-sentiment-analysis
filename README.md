@@ -44,3 +44,22 @@ fifa-world-cup-sentiment-analysis/
 └── assets/ (optional)
     ├── images/
     └── styles/
+
+    # ⚽ FIFA World Cup 2022 Sentiment Analysis
+
+A Streamlit app that analyzes public sentiment from World Cup tweets using NLTK VADER.
+
+## Features
+- Real-time sentiment analysis
+- Interactive visualizations
+- Word clouds by sentiment
+- Time series trends
+- Exportable reports
+
+## Live Demo
+[Add your Streamlit Cloud URL here after deployment]
+
+## Local Development
+```bash
+pip install -r requirements.txt
+streamlit run app/main.py
