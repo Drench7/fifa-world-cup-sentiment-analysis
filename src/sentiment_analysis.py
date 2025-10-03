@@ -108,3 +108,11 @@ def analyze_team_sentiments(df, team_keywords):
             }
     
     return team_sentiments
+
+def analyze_sentiment(df, text_column='cleaned_text'):
+    """
+    Analyze sentiment of tweets - wrapper function for Streamlit app compatibility
+    This function matches what the Streamlit app expects to import
+    """
+    analyzer = SentimentAnalyzer()
+    return analyzer.analyze_sentiments(df, text_column)

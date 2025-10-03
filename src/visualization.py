@@ -271,3 +271,85 @@ def save_visualizations(df, team_sentiments=None):
     
     if team_sentiments:
         visualizer.plot_team_sentiment_comparison(team_sentiments)
+
+# Wrapper functions for Streamlit app compatibility
+def create_sentiment_chart(df):
+    """
+    Create sentiment distribution chart - wrapper function for Streamlit app
+    """
+    visualizer = SentimentVisualizer()
+    
+    # Use Plotly for interactive charts in Streamlit
+    if 'sentiment' in df.columns:
+        sentiment_counts = df['sentiment'].value_counts().reset_index()
+        sentiment_counts.columns = ['sentiment', 'count']
+        
+        fig = px.pie(sentiment_counts, values='count', names='sentiment',
+                    title='Sentiment Distribution - FIFA World Cup 2022 Tweets',
+                    color='sentiment',
+                    color_discrete_map=visualizer.colors)
+        return fig
+    return None
+
+def create_wordcloud(df, sentiment_type='all'):
+    """
+    Create word cloud for tweets - wrapper function for Streamlit app
+    """
+    visualizer = SentimentVisualizer()
+    
+    try:
+        if 'cleaned_text' in df.columns:
+            if sentiment_type != 'all':
+                text_data = ' '.join(df[df['sentiment'] == sentiment_type]['cleaned_text'].dropna())
+            else:
+                text_data = ' '.join(df['cleaned_text'].dropna())
+            
+            if text_data.strip():
+                wordcloud = WordCloud(
+                    width=800, 
+                    height=400, 
+                    background_color='white',
+                    max_words=100,
+                    colormap='viridis'
+                ).generate(text_data)
+                
+                fig, ax = plt.subplots(figsize=(10, 5))
+                ax.imshow(wordcloud, interpolation='bilinear')
+                ax.axis('off')
+                ax.set_title(f'Word Cloud - {sentiment_type.capitalize()} Sentiment', fontsize=16)
+                return fig
+    except Exception as e:
+        print(f"Error creating word cloud: {e}")
+    return None
+
+def create_time_series(df):
+    """
+    Create time series of sentiments - wrapper function for Streamlit app
+    """
+    visualizer = SentimentVisualizer()
+    
+    try:
+        if 'date' in df.columns and 'sentiment' in df.columns:
+            # Use Plotly for interactive time series
+            df_time = df.copy()
+            if not pd.api.types.is_datetime64_any_dtype(df_time['date']):
+                df_time['date'] = pd.to_datetime(df_time['date'])
+            
+            df_time['date_only'] = df_time['date'].dt.date
+            time_series = df_time.groupby(['date_only', 'sentiment']).size().reset_index()
+            time_series.columns = ['date', 'sentiment', 'count']
+            
+            fig = px.line(
+                time_series,
+                x='date',
+                y='count',
+                color='sentiment',
+                title='Sentiment Trends Over Time - FIFA World Cup 2022',
+                labels={'count': 'Number of Tweets', 'date': 'Date'},
+                color_discrete_map=visualizer.colors
+            )
+            fig.update_layout(xaxis_title='Date', yaxis_title='Number of Tweets')
+            return fig
+    except Exception as e:
+        print(f"Error creating time series: {e}")
+    return None
