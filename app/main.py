@@ -20,34 +20,72 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 # --- NLTK Imports and Cloud Deployment Setup (CRITICAL for cloud envs) ---
 import nltk
+import os
+
+# Cloud deployment setup - ROBUST VERSION
+def setup_nltk():
+    """Ensure NLTK data is available for cloud deployment"""
+    try:
+        # Create NLTK data directory in a writable location
+        nltk_data_dir = os.path.join(os.getcwd(), 'nltk_data')
+        os.makedirs(nltk_data_dir, exist_ok=True)
+        
+        # Add to NLTK path
+        nltk.data.path.append(nltk_data_dir)
+        
+        # Download essential NLTK data with error handling
+        packages = [
+            'punkt', 
+            'stopwords', 
+            'vader_lexicon', 
+            'wordnet',
+            'punkt_tab'  # Add this for newer NLTK versions
+        ]
+        
+        for package in packages:
+            try:
+                if package == 'punkt':
+                    nltk.data.find(f'tokenizers/{package}')
+                elif package == 'punkt_tab':
+                    nltk.data.find(f'tokenizers/{package}')
+                else:
+                    nltk.data.find(f'corpora/{package}')
+                print(f"✅ {package} already available")
+            except LookupError:
+                print(f"📥 Downloading {package}...")
+                try:
+                    nltk.download(package, download_dir=nltk_data_dir, quiet=True)
+                    print(f"✅ Successfully downloaded {package}")
+                except Exception as e:
+                    print(f"⚠️ Failed to download {package}: {e}")
+                    
+    except Exception as e:
+        print(f"⚠️ NLTK setup warning: {e}")
+
+# Run setup at import time
+setup_nltk()
+
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
+
 try:
     from wordcloud import WordCloud
 except ImportError:
     st.warning("WordCloud library not found. Please install it (`pip install wordcloud`) to enable word cloud visualizations.")
-    WordCloud = None # Define WordCloud as None if import fails
-
-# Cloud deployment setup
-# Ensure NLTK data is available for cloud deployment
-try:
-    # Check for core tokenizers
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    print("Downloading NLTK data...")
-    # Setting quiet=True to avoid verbose output during deployment
-    nltk.download('punkt', quiet=True)
-    nltk.download('stopwords', quiet=True)
-    nltk.download('vader_lexicon', quiet=True) # VADER lexicon is essential
-    nltk.download('wordnet', quiet=True)
+    WordCloud = None
 
 # Configuration and Initialization
 logging.basicConfig(level=logging.INFO)
 
 # Initialize NLTK components once
-analyzer = SentimentIntensityAnalyzer()
-STOP_WORDS = set(stopwords.words('english'))
+try:
+    analyzer = SentimentIntensityAnalyzer()
+    STOP_WORDS = set(stopwords.words('english'))
+except Exception as e:
+    st.error(f"Error initializing NLTK components: {e}")
+    analyzer = None
+    STOP_WORDS = set()
 
 # Set page config MUST be the first Streamlit command
 st.set_page_config(
@@ -142,11 +180,24 @@ def safe_dataframe_display(df, columns_to_show=None):
     else:
         st.dataframe(df.head(10), use_container_width=True)
 
+# Enhanced error handling for text processing
+def safe_word_tokenize(text):
+    """Safely tokenize text with fallback"""
+    if pd.isna(text) or text is None:
+        return []
+    
+    try:
+        return word_tokenize(str(text))
+    except Exception as e:
+        # Fallback to simple split if NLTK fails
+        print(f"Tokenization fallback for text: {str(text)[:50]}...")
+        return str(text).split()
+
 # --- INTEGRATED ANALYSIS FUNCTIONS ---
 
 def clean_tweet_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Cleans tweet data, standardizing the text column and performing NLTK-based preprocessing.
+    Cleans tweet data with robust error handling
     """
     if df is None or df.empty:
         return df
@@ -155,41 +206,25 @@ def clean_tweet_data(df: pd.DataFrame) -> pd.DataFrame:
     text_column = find_text_column(df_clean)
     
     if text_column:
-        # Store the original text column name for reference
-        original_text_col = text_column
-        
-        # If the text column is not named 'text', create a standardized 'text' column
-        # but only if 'text' doesn't already exist to avoid duplicates
-        if original_text_col != 'text' and 'text' not in df_clean.columns:
-            df_clean['text'] = df_clean[original_text_col]
-        
         def simple_clean_and_preprocess(text):
             if pd.isna(text) or text is None:
                 return ""
             
             text = str(text).lower()
-            # Basic cleanup: remove URLs, mentions, and hashtags symbols
+            # Basic cleanup
             text = re.sub(r'http\S+', '', text)
             text = re.sub(r'@\w+', '', text)
             text = re.sub(r'#', '', text)
             
-            # Use NLTK word_tokenize to split text
-            try:
-                tokens = word_tokenize(text)
-            except:
-                  # Fallback if NLTK data is somehow missing despite the download block
-                tokens = text.split() 
+            # Use safe tokenization
+            tokens = safe_word_tokenize(text)
             
-            # Remove non-alphanumeric (mostly punctuation/special chars) and stop words
+            # Remove non-alphanumeric and stop words
             filtered_words = [w for w in tokens if w.isalnum() and w not in STOP_WORDS]
             
             return ' '.join(filtered_words)
             
-        # Use the appropriate text column for cleaning
-        if 'text' in df_clean.columns:
-            df_clean['cleaned_text'] = df_clean['text'].apply(simple_clean_and_preprocess)
-        else:
-            df_clean['cleaned_text'] = df_clean[original_text_col].apply(simple_clean_and_preprocess)
+        df_clean['cleaned_text'] = df_clean[text_column].apply(simple_clean_and_preprocess)
             
     return df_clean
 
@@ -201,32 +236,44 @@ def analyze_sentiment(df: pd.DataFrame) -> pd.DataFrame:
         st.error("Cannot perform sentiment analysis: 'cleaned_text' column is missing.")
         return df
 
+    if analyzer is None:
+        st.error("Sentiment analyzer not available. Check NLTK setup.")
+        return df
+
     def get_vader_sentiment_label(text):
         if not text:
             return 'neutral', 0.0
         
-        score = analyzer.polarity_scores(str(text))
-        compound = score['compound']
-        
-        # VADER threshold definitions
-        if compound >= 0.05:
-            return 'positive', compound
-        elif compound <= -0.05:
-            return 'negative', compound
-        else:
-            return 'neutral', compound
+        try:
+            score = analyzer.polarity_scores(str(text))
+            compound = score['compound']
+            
+            # VADER threshold definitions
+            if compound >= 0.05:
+                return 'positive', compound
+            elif compound <= -0.05:
+                return 'negative', compound
+            else:
+                return 'neutral', compound
+        except Exception as e:
+            print(f"Sentiment analysis error for text: {str(text)[:50]}...")
+            return 'neutral', 0.0
 
     # Apply the function to the 'cleaned_text' column
-    results = df['cleaned_text'].apply(lambda x: get_vader_sentiment_label(x)).apply(pd.Series)
-    results.columns = ['sentiment', 'sentiment_score']
-    
-    # Concatenate the new sentiment columns
-    df_result = pd.concat([df.reset_index(drop=True), results.reset_index(drop=True)], axis=1)
-    
-    # Remove any duplicates created during concatenation (defensive)
-    df_result = remove_duplicate_columns(df_result)
-    
-    return df_result
+    try:
+        results = df['cleaned_text'].apply(lambda x: get_vader_sentiment_label(x)).apply(pd.Series)
+        results.columns = ['sentiment', 'sentiment_score']
+        
+        # Concatenate the new sentiment columns
+        df_result = pd.concat([df.reset_index(drop=True), results.reset_index(drop=True)], axis=1)
+        
+        # Remove any duplicates created during concatenation (defensive)
+        df_result = remove_duplicate_columns(df_result)
+        
+        return df_result
+    except Exception as e:
+        st.error(f"Error in sentiment analysis: {e}")
+        return df
 
 
 # --- VISUALIZATION FUNCTIONS (Using Streamlit fallbacks, modified slightly) ---
@@ -356,57 +403,70 @@ section = st.sidebar.radio(
     ["🏠 Dashboard", "📊 Data Overview", "😊 Sentiment Analysis", "📈 Visualizations", "💡 Insights"]
 )
 
-# Load data function
+# Load data function with robust file handling
 @st.cache_data
 def load_data():
-    try:
-        # Try processed data first
-        df = pd.read_csv('data/processed/processed_tweets.csv')
-        st.sidebar.success("✅ Loaded processed data")
-        return df
-    except FileNotFoundError:
+    data_sources = [
+        'data/processed/processed_tweets.csv',
+        'data/raw/fifa_world_cup_2022_tweets.csv',
+        'processed_tweets.csv',  # Try root directory
+        'fifa_world_cup_2022_tweets.csv'  # Try root directory
+    ]
+    
+    for data_file in data_sources:
         try:
-            # Fall back to raw data
-            df = pd.read_csv('data/raw/fifa_world_cup_2022_tweets.csv')
-            st.sidebar.info("📊 Loaded raw data")
-            return df
-        except FileNotFoundError:
-            st.error("""
-            ❌ Data files not found. Using sample data for demonstration.
-            """)
-            # Create comprehensive sample data
-            sample_tweets = [
-                "What an amazing match! The World Cup is incredible! ⚽🎉",
-                "Terrible refereeing decisions ruining the game 😠",
-                "The atmosphere in the stadium is electric tonight!",
-                "Disappointing performance from our team today...",
-                "GOAL! What a brilliant strike! Beautiful football!",
-                "VAR is killing the spirit of the game",
-                "Incredible sportsmanship shown by the players 👏",
-                "The organization of this World Cup has been poor",
-                "What a tournament! Best World Cup ever!",
-                "Controversial penalty decision changing the game",
-                "The passion of the fans is unbelievable!",
-                "Poor quality pitch affecting the game quality",
-                "Historic victory for the underdogs! Amazing!",
-                "Another boring 0-0 draw...",
-                "The opening ceremony was spectacular!",
-                "Too many commercial breaks ruining the flow",
-                "Young talents shining in this World Cup 🌟",
-                "Questionable team selection by the coach",
-                "The world is united by football! Beautiful!",
-                "Security concerns at the stadium today"
-            ]
-            sample_data = {
-                'text': sample_tweets,
-                'created_at': pd.date_range('2022-11-20', periods=len(sample_tweets), freq='H'),
-                'user_name': [f'user_{i}' for i in range(len(sample_tweets))],
-                'retweet_count': np.random.randint(0, 1000, len(sample_tweets)),
-                'favorite_count': np.random.randint(0, 5000, len(sample_tweets))
-            }
-            df = pd.DataFrame(sample_data)
-            st.sidebar.warning("📝 Using sample data for demonstration")
-            return df
+            if os.path.exists(data_file):
+                df = pd.read_csv(data_file)
+                st.sidebar.success(f"✅ Loaded data from: {data_file}")
+                return df
+        except Exception as e:
+            continue
+    
+    # If no data files found, use sample data
+    st.warning("""
+    📝 Using sample data for demonstration. 
+    
+    To use your own data, make sure you have either:
+    - `data/raw/fifa_world_cup_2022_tweets.csv` or
+    - `data/processed/processed_tweets.csv`
+    """)
+    
+    # Create comprehensive sample data
+    sample_tweets = [
+        "What an amazing match! The World Cup is incredible! ⚽🎉",
+        "Terrible refereeing decisions ruining the game 😠",
+        "The atmosphere in the stadium is electric tonight!",
+        "Disappointing performance from our team today...",
+        "GOAL! What a brilliant strike! Beautiful football!",
+        "VAR is killing the spirit of the game",
+        "Incredible sportsmanship shown by the players 👏",
+        "The organization of this World Cup has been poor",
+        "What a tournament! Best World Cup ever!",
+        "Controversial penalty decision changing the game",
+        "The passion of the fans is unbelievable!",
+        "Poor quality pitch affecting the game quality",
+        "Historic victory for the underdogs! Amazing!",
+        "Another boring 0-0 draw...",
+        "The opening ceremony was spectacular!",
+        "Too many commercial breaks ruining the flow",
+        "Young talents shining in this World Cup 🌟",
+        "Questionable team selection by the coach",
+        "The world is united by football! Beautiful!",
+        "Security concerns at the stadium today"
+    ]
+    
+    sample_data = {
+        'text': sample_tweets * 2,  # Make it larger for better demo
+        'Tweet': sample_tweets * 2,  # Add Tweet column for compatibility
+        'created_at': pd.date_range('2022-11-20', periods=len(sample_tweets)*2, freq='H'),
+        'user_name': [f'user_{i}' for i in range(len(sample_tweets)*2)],
+        'retweet_count': np.random.randint(0, 1000, len(sample_tweets)*2),
+        'favorite_count': np.random.randint(0, 5000, len(sample_tweets)*2)
+    }
+    
+    df = pd.DataFrame(sample_data)
+    st.sidebar.info("📊 Using sample data for demonstration")
+    return df
 
 # Load and process data
 df = load_data()
