@@ -6,65 +6,32 @@ import sys
 import os
 import re
 import logging
-import time
-import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 from pathlib import Path
 from datetime import datetime
-from collections import Counter
-from functools import wraps
-from dataclasses import dataclass
 
 # --- Visualization Imports ---
 import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
-import seaborn as sns
 # Suppress matplotlib warnings/output which can interfere with Streamlit
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# --- Configuration Management ---
-@dataclass
-class AppConfig:
-    nltk_data_path: str = './nltk_data'
-    cache_ttl: int = 3600
-    max_file_size: int = 200  # MB
-    supported_file_types: list = None
-    default_sample_size: int = 1000
-    
-    def __post_init__(self):
-        if self.supported_file_types is None:
-            self.supported_file_types = ['csv', 'xlsx', 'json']
-
-config = AppConfig()
-
-# --- Performance Monitoring Decorator ---
-def timing_decorator(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        if 'sentiment' in st.get_query_params().get('debug', []):
-            st.sidebar.write(f"⏱️ {func.__name__}: {end_time - start_time:.2f}s")
-        return result
-    return wrapper
-
-# --- NLTK Imports and Cloud Deployment Setup (CRITICAL for cloud envs) ---
+# --- NLTK Imports and Enhanced Cloud Deployment Setup ---
 import nltk
-import os
 
-# Cloud deployment setup - ROBUST VERSION
+# ENHANCED NLTK Setup - Combining both approaches for maximum reliability
 def setup_nltk():
-    """Ensure NLTK data is available for cloud deployment"""
+    """Ensure NLTK data is available for cloud deployment - Enhanced version"""
     try:
         # Create NLTK data directory in a writable location
         nltk_data_dir = os.path.join(os.getcwd(), 'nltk_data')
         os.makedirs(nltk_data_dir, exist_ok=True)
         
         # Add to NLTK path
-        nltk.data.path.append(nltk_data_dir)
+        if nltk_data_dir not in nltk.data.path:
+            nltk.data.path.append(nltk_data_dir)
         
         # Download essential NLTK data with error handling
         packages = [
@@ -72,12 +39,14 @@ def setup_nltk():
             'stopwords', 
             'vader_lexicon', 
             'wordnet',
-            'punkt_tab'  # Add this for newer NLTK versions
+            'punkt_tab'  # For newer NLTK versions
         ]
         
         for package in packages:
             try:
-                if package in ['punkt', 'punkt_tab']:
+                if package == 'punkt':
+                    nltk.data.find(f'tokenizers/{package}')
+                elif package == 'punkt_tab':
                     nltk.data.find(f'tokenizers/{package}')
                 else:
                     nltk.data.find(f'corpora/{package}')
@@ -102,27 +71,9 @@ from nltk.tokenize import word_tokenize
 
 try:
     from wordcloud import WordCloud
-    WORDCLOUD_AVAILABLE = True
 except ImportError:
     st.warning("WordCloud library not found. Please install it (`pip install wordcloud`) to enable word cloud visualizations.")
-    WORDCLOUD_AVAILABLE = False
-
-# --- Dependency Check ---
-def check_dependencies():
-    """Check if all required packages are available"""
-    required_packages = ['streamlit', 'pandas', 'numpy', 'nltk', 'matplotlib', 'plotly']
-    missing = []
-    
-    for package in required_packages:
-        try:
-            __import__(package)
-        except ImportError:
-            missing.append(package)
-    
-    if missing:
-        st.error(f"Missing packages: {', '.join(missing)}")
-        return False
-    return True
+    WordCloud = None
 
 # Configuration and Initialization
 logging.basicConfig(level=logging.INFO)
@@ -164,13 +115,6 @@ st.markdown("""
     .positive { color: #2E8B57; }
     .negative { color: #DC143C; }
     .neutral { color: #FFD700; }
-    .performance-info {
-        background-color: #e8f4fd;
-        padding: 0.5rem;
-        border-radius: 5px;
-        font-size: 0.8rem;
-        margin: 0.5rem 0;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -236,45 +180,6 @@ def safe_dataframe_display(df, columns_to_show=None):
     else:
         st.dataframe(df.head(10), use_container_width=True)
 
-def optimize_dataframe_memory(df):
-    """Optimize DataFrame memory usage"""
-    if df is None:
-        return df
-    
-    initial_memory = df.memory_usage(deep=True).sum() / 1024**2  # MB
-    
-    # Downcast numeric columns
-    for col in df.select_dtypes(include=['int']).columns:
-        df[col] = pd.to_numeric(df[col], downcast='integer')
-    
-    for col in df.select_dtypes(include=['float']).columns:
-        df[col] = pd.to_numeric(df[col], downcast='float')
-    
-    # Convert object columns to category where appropriate
-    for col in df.select_dtypes(include=['object']).columns:
-        if df[col].nunique() / len(df) < 0.5:  # If unique values < 50%
-            df[col] = df[col].astype('category')
-    
-    final_memory = df.memory_usage(deep=True).sum() / 1024**2  # MB
-    memory_saved = initial_memory - final_memory
-    
-    if memory_saved > 1:  # Only show if saved more than 1MB
-        st.sidebar.info(f"📊 Memory optimized: {memory_saved:.1f}MB saved")
-    
-    return df
-
-def get_detailed_error_info(df, error):
-    """Provide more detailed error information for debugging"""
-    import traceback
-    error_info = {
-        'columns': df.columns.tolist() if df is not None else [],
-        'shape': df.shape if df is not None else (0, 0),
-        'memory_usage': df.memory_usage(deep=True).sum() if df is not None else 0,
-        'null_counts': df.isnull().sum().to_dict() if df is not None else {},
-        'error_traceback': traceback.format_exc()
-    }
-    return error_info
-
 # Enhanced error handling for text processing
 def safe_word_tokenize(text):
     """Safely tokenize text with fallback"""
@@ -290,7 +195,6 @@ def safe_word_tokenize(text):
 
 # --- INTEGRATED ANALYSIS FUNCTIONS ---
 
-@timing_decorator
 def clean_tweet_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     Cleans tweet data with robust error handling
@@ -324,10 +228,9 @@ def clean_tweet_data(df: pd.DataFrame) -> pd.DataFrame:
             
     return df_clean
 
-@timing_decorator
-def analyze_sentiment_with_progress(df: pd.DataFrame) -> pd.DataFrame:
+def analyze_sentiment(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Performs VADER sentiment analysis with progress tracking
+    Performs VADER sentiment analysis on the 'cleaned_text' column of the DataFrame.
     """
     if df is None or df.empty or 'cleaned_text' not in df.columns:
         st.error("Cannot perform sentiment analysis: 'cleaned_text' column is missing.")
@@ -356,28 +259,13 @@ def analyze_sentiment_with_progress(df: pd.DataFrame) -> pd.DataFrame:
             print(f"Sentiment analysis error for text: {str(text)[:50]}...")
             return 'neutral', 0.0
 
-    # Apply the function to the 'cleaned_text' column with progress
+    # Apply the function to the 'cleaned_text' column
     try:
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        results = []
-        total_rows = len(df)
-        
-        for i, text in enumerate(df['cleaned_text']):
-            results.append(get_vader_sentiment_label(text))
-            if i % 100 == 0 or i == total_rows - 1:  # Update progress every 100 rows or at end
-                progress = min((i + 1) / total_rows, 1.0)
-                progress_bar.progress(progress)
-                status_text.text(f"Analyzing sentiment... {i+1}/{total_rows} ({progress*100:.1f}%)")
-        
-        progress_bar.empty()
-        status_text.empty()
-        
-        results_df = pd.DataFrame(results, columns=['sentiment', 'sentiment_score'])
+        results = df['cleaned_text'].apply(lambda x: get_vader_sentiment_label(x)).apply(pd.Series)
+        results.columns = ['sentiment', 'sentiment_score']
         
         # Concatenate the new sentiment columns
-        df_result = pd.concat([df.reset_index(drop=True), results_df.reset_index(drop=True)], axis=1)
+        df_result = pd.concat([df.reset_index(drop=True), results.reset_index(drop=True)], axis=1)
         
         # Remove any duplicates created during concatenation (defensive)
         df_result = remove_duplicate_columns(df_result)
@@ -387,10 +275,8 @@ def analyze_sentiment_with_progress(df: pd.DataFrame) -> pd.DataFrame:
         st.error(f"Error in sentiment analysis: {e}")
         return df
 
-# Alias for backward compatibility
-analyze_sentiment = analyze_sentiment_with_progress
 
-# --- VISUALIZATION FUNCTIONS ---
+# --- VISUALIZATION FUNCTIONS (Using Streamlit fallbacks, modified slightly) ---
 
 def create_sentiment_chart(df):
     """Creates a Plotly Pie chart for sentiment distribution."""
@@ -417,7 +303,7 @@ def create_sentiment_chart(df):
 
 def create_wordcloud(df, sentiment_type='all'):
     """Creates a Matplotlib-based Word Cloud."""
-    if not WORDCLOUD_AVAILABLE:
+    if WordCloud is None:
         st.warning("WordCloud library not installed. Please run: pip install wordcloud")
         return None
         
@@ -453,7 +339,7 @@ def create_wordcloud(df, sentiment_type='all'):
     except Exception as e:
         st.error(f"Error creating word cloud: {e}")
         return None
-
+    
 def create_time_series(df):
     """Creates a Plotly Line chart for sentiment trends over time."""
     date_column = None
@@ -504,68 +390,22 @@ def create_time_series(df):
         st.error(f"Error creating time series: {e}")
         return None
 
-def create_sentiment_over_time_heatmap(df):
-    """Create a heatmap of sentiment by day/hour"""
-    date_column = None
-    for col in ['date', 'created_at', 'Date Created', 'timestamp']:
-        if col in df.columns:
-            date_column = col
-            break
-    
-    if date_column is None or 'sentiment' not in df.columns:
-        return None
-    
-    try:
-        df_temp = df.copy()
-        df_temp[date_column] = pd.to_datetime(df_temp[date_column], errors='coerce')
-        df_temp = df_temp.dropna(subset=[date_column])
-        
-        if df_temp.empty:
-            return None
-            
-        df_temp['hour'] = df_temp[date_column].dt.hour
-        df_temp['day'] = df_temp[date_column].dt.date
-        
-        pivot_data = df_temp.groupby(['day', 'hour', 'sentiment']).size().unstack(fill_value=0)
-        
-        if pivot_data.empty:
-            return None
-            
-        fig = px.imshow(
-            pivot_data.T,  # Transpose for better visualization
-            aspect='auto', 
-            title='Sentiment Heatmap by Time (Day vs Hour)',
-            labels=dict(x="Day-Hour", y="Sentiment", color="Count"),
-            color_continuous_scale='Viridis'
-        )
-        fig.update_xaxes(tickangle=45)
-        return fig
-    except Exception as e:
-        st.error(f"Heatmap error: {e}")
-        return None
+# --- STREAMLIT APP LOGIC ---
 
-def analyze_common_phrases(df, sentiment_type, phrase_length=2):
-    """Analyze common phrases instead of just words"""
-    if 'cleaned_text' not in df.columns or 'sentiment' not in df.columns:
-        return None
-    
-    filtered_df = df[df['sentiment'] == sentiment_type]
-    phrases = []
-    
-    for text in filtered_df['cleaned_text'].dropna():
-        words = text.split()
-        # Create n-grams
-        for i in range(len(words) - phrase_length + 1):
-            phrases.append(' '.join(words[i:i + phrase_length]))
-    
-    common_phrases = Counter(phrases).most_common(10)
-    return common_phrases
+# Title and description
+st.markdown('<div class="main-header">⚽ FIFA World Cup 2022 Tweet Sentiment Analysis</div>', unsafe_allow_html=True)
+st.markdown("Analyzing public sentiment from tweets during the FIFA World Cup 2022")
 
-# --- DATA LOADING AND PROCESSING ---
+# Sidebar for navigation
+st.sidebar.title("Navigation")
+section = st.sidebar.radio(
+    "Go to:",
+    ["🏠 Dashboard", "📊 Data Overview", "😊 Sentiment Analysis", "📈 Visualizations", "💡 Insights"]
+)
 
-@st.cache_data(ttl=config.cache_ttl)
+# Load data function with robust file handling
+@st.cache_data
 def load_data():
-    """Load data with multiple fallback options and memory optimization"""
     data_sources = [
         'data/processed/processed_tweets.csv',
         'data/raw/fifa_world_cup_2022_tweets.csv',
@@ -577,7 +417,6 @@ def load_data():
         try:
             if os.path.exists(data_file):
                 df = pd.read_csv(data_file)
-                df = optimize_dataframe_memory(df)
                 st.sidebar.success(f"✅ Loaded data from: {data_file}")
                 return df
         except Exception as e:
@@ -626,482 +465,428 @@ def load_data():
     }
     
     df = pd.DataFrame(sample_data)
-    df = optimize_dataframe_memory(df)
     st.sidebar.info("📊 Using sample data for demonstration")
     return df
 
-# --- STREAMLIT APP LOGIC ---
+# Load and process data
+df = load_data()
 
-def main():
-    # Check dependencies
-    if not check_dependencies():
-        st.error("Please install missing dependencies to run the application.")
-        return
+# Remove duplicate columns immediately after loading (initial cleanup)
+df = remove_duplicate_columns(df)
 
-    # Title and description
-    st.markdown('<div class="main-header">⚽ FIFA World Cup 2022 Tweet Sentiment Analysis</div>', unsafe_allow_html=True)
-    st.markdown("Analyzing public sentiment from tweets during the FIFA World Cup 2022")
+# --- SIMPLIFIED COLUMN STANDARDIZATION ---
+# Skip complex renaming since data already has good structure
+st.sidebar.info("✅ Using optimized column structure")
 
-    # Sidebar for navigation
-    st.sidebar.title("Navigation")
-    section = st.sidebar.radio(
-        "Go to:",
-        ["🏠 Dashboard", "📊 Data Overview", "😊 Sentiment Analysis", "📈 Visualizations", "💡 Insights"]
-    )
-
-    # Load and process data
-    df = load_data()
-
-    # Remove duplicate columns immediately after loading (initial cleanup)
-    df = remove_duplicate_columns(df)
-
-    # Process data (Cleaning and Sentiment Analysis)
-    if df is not None and ('cleaned_text' not in df.columns or 'sentiment' not in df.columns):
-        with st.spinner("Processing data..."):
-            try:
-                # 1. Cleaning
-                df_processed = clean_tweet_data(df)
-                
-                # 2. Sentiment Analysis
-                df_processed = analyze_sentiment_with_progress(df_processed)
-                
-                # Remove duplicates from processed data
-                df_processed = remove_duplicate_columns(df_processed)
-                
-                # Verify the processing worked
-                if 'sentiment' in df_processed.columns and 'cleaned_text' in df_processed.columns:
-                    df = df_processed
-                    st.sidebar.success("✅ Data cleaned and sentiment analyzed successfully using NLTK VADER.")
-                else:
-                    st.sidebar.error("⚠️ Data cleaning or Sentiment analysis failed to generate required columns.")
-                    df = df_processed
-            except Exception as e:
-                error_info = get_detailed_error_info(df, e)
-                st.error(f"Error during core data processing: {e}")
-                st.info("Continuing with raw data, visualizations may fail.")
-
-    # Debug information
-    with st.sidebar.expander("🔧 Debug Info"):
-        st.write("DataFrame shape:", df.shape if df is not None else "No data")
-        if df is not None:
-            st.write("Columns:", df.columns.tolist())
-            st.write("Duplicate columns:", [col for col in df.columns if list(df.columns).count(col) > 1])
-            st.write("Sentiment column exists:", 'sentiment' in df.columns)
-            text_col = find_text_column(df)
-            st.write("Text column found:", text_col)
+# Process data (Cleaning and Sentiment Analysis)
+if df is not None and ('cleaned_text' not in df.columns or 'sentiment' not in df.columns):
+    with st.spinner("Processing data..."):
+        try:
+            # 1. Cleaning
+            df_processed = clean_tweet_data(df)
             
-            # Show available engagement metrics
-            engagement_cols = [col for col in df.columns if any(keyword in col.lower() for keyword in 
-                              ['retweet', 'like', 'favorite', 'share', 'engagement'])]
-            st.write("Engagement columns:", engagement_cols)
+            # 2. Sentiment Analysis
+            df_processed = analyze_sentiment(df_processed)
             
-            # Performance info
-            st.markdown('<div class="performance-info">', unsafe_allow_html=True)
-            st.write("Memory usage:", f"{df.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
-            st.write("Data types:", dict(df.dtypes.value_counts()))
-            st.markdown('</div>', unsafe_allow_html=True)
+            # Remove duplicates from processed data
+            df_processed = remove_duplicate_columns(df_processed)
+            
+            # Verify the processing worked
+            if 'sentiment' in df_processed.columns and 'cleaned_text' in df_processed.columns:
+                df = df_processed
+                st.sidebar.success("✅ Data cleaned and sentiment analyzed successfully using NLTK VADER.")
+            else:
+                st.sidebar.error("⚠️ Data cleaning or Sentiment analysis failed to generate required columns.")
+                df = df_processed
+        except Exception as e:
+            st.error(f"Error during core data processing: {e}")
+            st.info("Continuing with raw data, visualizations may fail.")
 
-    # --- APP SECTIONS ---
-
-    if section == "🏠 Dashboard":
-        st.header("📊 Dashboard Overview")
+# Debug information
+with st.sidebar.expander("🔧 Debug Info"):
+    st.write("DataFrame shape:", df.shape if df is not None else "No data")
+    if df is not None:
+        st.write("Columns:", df.columns.tolist())
+        st.write("Duplicate columns:", [col for col in df.columns if list(df.columns).count(col) > 1])
+        st.write("Sentiment column exists:", 'sentiment' in df.columns)
+        text_col = find_text_column(df)
+        st.write("Text column found:", text_col)
         
-        # Key metrics
-        if df is not None and 'sentiment' in df.columns:
-            sentiment_counts = df['sentiment'].value_counts()
-            total_tweets = len(df)
-            positive_count = sentiment_counts.get('positive', 0)
-            negative_count = sentiment_counts.get('negative', 0)
-            neutral_count = sentiment_counts.get('neutral', 0)
+        # Show available engagement metrics
+        engagement_cols = [col for col in df.columns if any(keyword in col.lower() for keyword in 
+                          ['retweet', 'like', 'favorite', 'share', 'engagement'])]
+        st.write("Engagement columns:", engagement_cols)
+
+# --- APP SECTIONS ---
+
+if section == "🏠 Dashboard":
+    st.header("📊 Dashboard Overview")
+    
+    # Key metrics
+    if df is not None and 'sentiment' in df.columns:
+        sentiment_counts = df['sentiment'].value_counts()
+        total_tweets = len(df)
+        positive_count = sentiment_counts.get('positive', 0)
+        negative_count = sentiment_counts.get('negative', 0)
+        neutral_count = sentiment_counts.get('neutral', 0)
+    else:
+        total_tweets = len(df) if df is not None else 0
+        positive_count = negative_count = neutral_count = 0
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Total Tweets", f"{total_tweets:,}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="metric-card positive">', unsafe_allow_html=True)
+        st.metric("Positive Tweets", f"{positive_count:,}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown('<div class="metric-card negative">', unsafe_allow_html=True)
+        st.metric("Negative Tweets", f"{negative_count:,}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown('<div class="metric-card neutral">', unsafe_allow_html=True)
+        st.metric("Neutral Tweets", f"{neutral_count:,}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Sentiment distribution chart
+    st.subheader("Sentiment Distribution")
+    if df is not None and 'sentiment' in df.columns:
+        fig = create_sentiment_chart(df)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            total_tweets = len(df) if df is not None else 0
-            positive_count = negative_count = neutral_count = 0
+            st.info("Could not generate sentiment chart")
+    else:
+        st.warning("No sentiment data available for visualization. Check data processing.")
+    
+    # Recent tweets preview
+    st.subheader("Recent Tweets Preview")
+    safe_dataframe_display(df, ['text', 'Tweet', 'sentiment', 'sentiment_score'])
+
+elif section == "📊 Data Overview":
+    st.header("📊 Data Overview")
+    
+    if df is None:
+        st.error("No data available")
+        st.stop()
+    
+    st.subheader("Dataset Information")
+    col1, col2 = st.columns(2)
+    
+    # Find date column for date range
+    date_column = None
+    for col in ['date', 'created_at', 'Date Created']:
+        if col in df.columns:
+            date_column = col
+            break
+            
+    with col1:
+        st.info(f"**Total Records:** {len(df):,}")
+        st.info(f"**Columns:** {len(df.columns)}")
+    
+    with col2:
+        if date_column and pd.api.types.is_datetime64_any_dtype(df[date_column]):
+            date_min = df[date_column].min()
+            date_max = df[date_column].max()
+            if hasattr(date_min, 'date') and hasattr(date_max, 'date'):
+                st.info(f"**Date Range:** {date_min.date()} to {date_max.date()}")
+            else:
+                st.info(f"**Date Range:** {date_min} to {date_max}")
+        else:
+            st.info("**Date Range:** N/A (Date column not found or formatted)")
+        st.info(f"**Missing Values:** {df.isnull().sum().sum()}")
         
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric("Total Tweets", f"{total_tweets:,}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown('<div class="metric-card positive">', unsafe_allow_html=True)
-            st.metric("Positive Tweets", f"{positive_count:,}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col3:
-            st.markdown('<div class="metric-card negative">', unsafe_allow_html=True)
-            st.metric("Negative Tweets", f"{negative_count:,}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col4:
-            st.markdown('<div class="metric-card neutral">', unsafe_allow_html=True)
-            st.metric("Neutral Tweets", f"{neutral_count:,}")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Sentiment distribution chart
+    st.subheader("Data Sample (First 10 Rows)")
+    safe_dataframe_display(df)
+    
+    st.subheader("Column Details")
+    for col in df.columns:
+        with st.expander(f"📁 {col} ({df[col].dtype})"):
+            st.write(f"Unique values: {df[col].nunique()}")
+            st.write(f"Missing values: {df[col].isnull().sum()}")
+            if df[col].dtype in ['object', 'string']:
+                st.write("Sample values:")
+                sample_values = df[col].dropna().head(5).tolist()
+                for i, val in enumerate(sample_values):
+                    st.write(f"{i+1}. {str(val)[:100]}{'...' if len(str(val)) > 100 else ''}")
+            elif pd.api.types.is_numeric_dtype(df[col]):
+                st.write(f"Mean: {df[col].mean():.2f}")
+                st.write(f"Min: {df[col].min():.2f}")
+                st.write(f"Max: {df[col].max():.2f}")
+
+elif section == "😊 Sentiment Analysis":
+    st.header("😊 Sentiment Analysis Overview")
+    
+    if df is None or 'sentiment' not in df.columns:
+        st.error("No sentiment data available. Please check data processing steps.")
+        st.stop()
+    
+    # Sentiment statistics
+    sentiment_counts = df['sentiment'].value_counts()
+    total_tweets = len(df)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown('<div class="metric-card positive">', unsafe_allow_html=True)
+        st.metric(
+            "Positive Sentiment", 
+            f"{sentiment_counts.get('positive', 0):,}",
+            f"{(sentiment_counts.get('positive', 0)/total_tweets*100):.1f}%"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="metric-card negative">', unsafe_allow_html=True)
+        st.metric(
+            "Negative Sentiment", 
+            f"{sentiment_counts.get('negative', 0):,}",
+            f"{(sentiment_counts.get('negative', 0)/total_tweets*100):.1f}%"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown('<div class="metric-card neutral">', unsafe_allow_html=True)
+        st.metric(
+            "Neutral Sentiment", 
+            f"{sentiment_counts.get('neutral', 0):,}",
+            f"{(sentiment_counts.get('neutral', 0)/total_tweets*100):.1f}%"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Sentiment exploration
+    st.subheader("Explore Tweets by Sentiment")
+    
+    sentiment_filter = st.selectbox(
+        "Select sentiment to explore:",
+        ["all", "positive", "negative", "neutral"]
+    )
+    
+    if sentiment_filter != "all":
+        filtered_df = df[df['sentiment'] == sentiment_filter]
+    else:
+        filtered_df = df
+    
+    st.write(f"Showing {len(filtered_df):,} tweets")
+    
+    # Use available text columns
+    display_columns = []
+    text_cols = ['text', 'Tweet', 'cleaned_text']
+    for col in text_cols:
+        if col in filtered_df.columns:
+            display_columns.append(col)
+            break
+    
+    display_columns.extend(['sentiment', 'sentiment_score'])
+    
+    # Add user and date if available
+    if 'user_name' in filtered_df.columns:
+        display_columns.append('user_name')
+    if 'date' in filtered_df.columns:
+        display_columns.append('date')
+    elif 'Date Created' in filtered_df.columns:
+        display_columns.append('Date Created')
+    
+    safe_dataframe_display(filtered_df, display_columns)
+
+elif section == "📈 Visualizations":
+    st.header("📈 Visualizations")
+    
+    if df is None:
+        st.error("No data available for visualization")
+        st.stop()
+    
+    # Visualization options
+    viz_type = st.selectbox(
+        "Choose visualization:",
+        ["Sentiment Distribution", "Word Cloud", "Time Series", "All Visualizations"]
+    )
+    
+    if viz_type == "Sentiment Distribution" or viz_type == "All Visualizations":
         st.subheader("Sentiment Distribution")
-        if df is not None and 'sentiment' in df.columns:
+        if 'sentiment' in df.columns:
             fig = create_sentiment_chart(df)
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("Could not generate sentiment chart")
+                st.info("Could not generate sentiment distribution chart")
         else:
-            st.warning("No sentiment data available for visualization. Check data processing.")
+            st.warning("No sentiment data available for this visualization")
+    
+    if viz_type == "Word Cloud" or viz_type == "All Visualizations":
+        st.subheader("Word Clouds by Sentiment (Based on Cleaned Text)")
         
-        # Recent tweets preview
-        st.subheader("Recent Tweets Preview")
-        safe_dataframe_display(df, ['text', 'Tweet', 'sentiment', 'sentiment_score'])
-
-    elif section == "📊 Data Overview":
-        st.header("📊 Data Overview")
+        if 'cleaned_text' in df.columns and 'sentiment' in df.columns:
+            if WordCloud is None:
+                st.warning("WordCloud library is not installed. Please run: `pip install wordcloud`")
+            else:
+                wc_sentiment = st.selectbox(
+                    "Select sentiment for word cloud:",
+                    ["all", "positive", "negative", "neutral"],
+                    key='wc_select'
+                )
+                
+                fig = create_wordcloud(df, wc_sentiment)
+                if fig:
+                    st.pyplot(fig)
+                else:
+                    st.info("Word cloud cannot be generated with current data.")
+        else:
+            st.warning("No cleaned text or sentiment data available for word cloud generation.")
+    
+    if viz_type == "Time Series" or viz_type == "All Visualizations":
+        st.subheader("Sentiment Trends Over Time")
         
-        if df is None:
-            st.error("No data available")
-            return
-        
-        st.subheader("Dataset Information")
-        col1, col2 = st.columns(2)
-        
-        # Find date column for date range
         date_column = None
         for col in ['date', 'created_at', 'Date Created']:
             if col in df.columns:
                 date_column = col
                 break
-                
-        with col1:
-            st.info(f"**Total Records:** {len(df):,}")
-            st.info(f"**Columns:** {len(df.columns)}")
         
-        with col2:
-            if date_column and pd.api.types.is_datetime64_any_dtype(df[date_column]):
-                date_min = df[date_column].min()
-                date_max = df[date_column].max()
-                if hasattr(date_min, 'date') and hasattr(date_max, 'date'):
-                    st.info(f"**Date Range:** {date_min.date()} to {date_max.date()}")
-                else:
-                    st.info(f"**Date Range:** {date_min} to {date_max}")
+        if date_column and 'sentiment' in df.columns:
+            time_fig = create_time_series(df)
+            if time_fig:
+                st.plotly_chart(time_fig, use_container_width=True)
             else:
-                st.info("**Date Range:** N/A (Date column not found or formatted)")
-            st.info(f"**Missing Values:** {df.isnull().sum().sum()}")
-            
-        st.subheader("Data Sample (First 10 Rows)")
-        safe_dataframe_display(df)
-        
-        st.subheader("Column Details")
-        for col in df.columns:
-            with st.expander(f"📁 {col} ({df[col].dtype})"):
-                st.write(f"Unique values: {df[col].nunique()}")
-                st.write(f"Missing values: {df[col].isnull().sum()}")
-                if df[col].dtype in ['object', 'string']:
-                    st.write("Sample values:")
-                    sample_values = df[col].dropna().head(5).tolist()
-                    for i, val in enumerate(sample_values):
-                        st.write(f"{i+1}. {str(val)[:100]}{'...' if len(str(val)) > 100 else ''}")
-                elif pd.api.types.is_numeric_dtype(df[col]):
-                    st.write(f"Mean: {df[col].mean():.2f}")
-                    st.write(f"Min: {df[col].min():.2f}")
-                    st.write(f"Max: {df[col].max():.2f}")
+                st.info("Could not generate time series chart. Check if date column contains valid dates.")
+        else:
+            st.warning("No appropriate date column found or sentiment data is missing.")
 
-    elif section == "😊 Sentiment Analysis":
-        st.header("😊 Sentiment Analysis Overview")
-        
-        if df is None or 'sentiment' not in df.columns:
-            st.error("No sentiment data available. Please check data processing steps.")
-            return
-        
-        # Sentiment statistics
+elif section == "💡 Insights":
+    st.header("💡 Key Insights")
+    
+    if df is None:
+        st.error("No data available for insights")
+        st.stop()
+    
+    # Calculate insights
+    total_tweets = len(df)
+    
+    if 'sentiment' in df.columns:
+        positive_pct = (df['sentiment'] == 'positive').sum() / total_tweets * 100
+        negative_pct = (df['sentiment'] == 'negative').sum() / total_tweets * 100
+        neutral_pct = (df['sentiment'] == 'neutral').sum() / total_tweets * 100
         sentiment_counts = df['sentiment'].value_counts()
-        total_tweets = len(df)
+    else:
+        positive_pct = negative_pct = neutral_pct = 0
+        sentiment_counts = pd.Series(dtype='int64')
+
+    # Calculate engagement metrics from available columns
+    retweet_col = None
+    favorite_col = None
+    
+    for col in df.columns:
+        col_lower = str(col).lower()
+        if 'retweet' in col_lower or 'rt' in col_lower:
+            retweet_col = col
+        elif 'favorite' in col_lower or 'like' in col_lower or 'fav' in col_lower:
+            favorite_col = col
+    
+    avg_retweets = df[retweet_col].mean() if retweet_col and retweet_col in df.columns else 0
+    avg_favorites = df[favorite_col].mean() if favorite_col and favorite_col in df.columns else 0
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📈 Sentiment Overview")
+        st.metric("Overall Positive Sentiment", f"{positive_pct:.1f}%")
+        st.metric("Overall Negative Sentiment", f"{negative_pct:.1f}%")
+        st.metric("Overall Neutral Sentiment", f"{neutral_pct:.1f}%")
         
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.markdown('<div class="metric-card positive">', unsafe_allow_html=True)
-            st.metric(
-                "Positive Sentiment", 
-                f"{sentiment_counts.get('positive', 0):,}",
-                f"{(sentiment_counts.get('positive', 0)/total_tweets*100):.1f}%"
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown('<div class="metric-card negative">', unsafe_allow_html=True)
-            st.metric(
-                "Negative Sentiment", 
-                f"{sentiment_counts.get('negative', 0):,}",
-                f"{(sentiment_counts.get('negative', 0)/total_tweets*100):.1f}%"
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col3:
-            st.markdown('<div class="metric-card neutral">', unsafe_allow_html=True)
-            st.metric(
-                "Neutral Sentiment", 
-                f"{sentiment_counts.get('neutral', 0):,}",
-                f"{(sentiment_counts.get('neutral', 0)/total_tweets*100):.1f}%"
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Sentiment exploration
-        st.subheader("Explore Tweets by Sentiment")
-        
-        sentiment_filter = st.selectbox(
-            "Select sentiment to explore:",
-            ["all", "positive", "negative", "neutral"]
-        )
-        
-        if sentiment_filter != "all":
-            filtered_df = df[df['sentiment'] == sentiment_filter]
+        # Sentiment summary
+        if positive_pct > negative_pct and positive_pct > neutral_pct:
+            st.success("🎉 Overall public sentiment leaning **POSITIVE** towards the World Cup.")
+        elif negative_pct > positive_pct and negative_pct > neutral_pct:
+            st.error("⚠️ Overall public sentiment leaning **NEGATIVE**. Investigate key negative topics (check Negative Word Cloud).")
         else:
-            filtered_df = df
+            st.info("⚖️ Sentiment is largely **NEUTRAL** or balanced, indicating balanced discussion or lack of strong opinion.")
+    
+    with col2:
+        st.subheader("📊 Engagement Metrics")
         
-        st.write(f"Showing {len(filtered_df):,} tweets")
-        
-        # Use available text columns
-        display_columns = []
-        text_cols = ['text', 'Tweet', 'cleaned_text']
-        for col in text_cols:
-            if col in filtered_df.columns:
-                display_columns.append(col)
-                break
-        
-        display_columns.extend(['sentiment', 'sentiment_score'])
-        
-        # Add user and date if available
-        if 'user_name' in filtered_df.columns:
-            display_columns.append('user_name')
-        if 'date' in filtered_df.columns:
-            display_columns.append('date')
-        elif 'Date Created' in filtered_df.columns:
-            display_columns.append('Date Created')
-        
-        safe_dataframe_display(filtered_df, display_columns)
-        
-        # Common phrases analysis
-        if sentiment_filter != "all":
-            st.subheader(f"Common Phrases in {sentiment_filter.capitalize()} Tweets")
-            common_phrases = analyze_common_phrases(df, sentiment_filter)
-            if common_phrases:
-                phrases_df = pd.DataFrame(common_phrases, columns=['Phrase', 'Count'])
-                st.dataframe(phrases_df, use_container_width=True)
-            else:
-                st.info("No common phrases found or data not available.")
-
-    elif section == "📈 Visualizations":
-        st.header("📈 Visualizations")
-        
-        if df is None:
-            st.error("No data available for visualization")
-            return
-        
-        # Visualization options
-        viz_type = st.selectbox(
-            "Choose visualization:",
-            ["Sentiment Distribution", "Word Cloud", "Time Series", "Heatmap", "All Visualizations"]
-        )
-        
-        if viz_type == "Sentiment Distribution" or viz_type == "All Visualizations":
-            st.subheader("Sentiment Distribution")
-            if 'sentiment' in df.columns:
-                fig = create_sentiment_chart(df)
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.info("Could not generate sentiment distribution chart")
-            else:
-                st.warning("No sentiment data available for this visualization")
-        
-        if viz_type == "Word Cloud" or viz_type == "All Visualizations":
-            st.subheader("Word Clouds by Sentiment (Based on Cleaned Text)")
-            
-            if 'cleaned_text' in df.columns and 'sentiment' in df.columns:
-                if not WORDCLOUD_AVAILABLE:
-                    st.warning("WordCloud library is not installed. Please run: `pip install wordcloud`")
-                else:
-                    wc_sentiment = st.selectbox(
-                        "Select sentiment for word cloud:",
-                        ["all", "positive", "negative", "neutral"],
-                        key='wc_select'
-                    )
-                    
-                    fig = create_wordcloud(df, wc_sentiment)
-                    if fig:
-                        st.pyplot(fig)
-                    else:
-                        st.info("Word cloud cannot be generated with current data.")
-            else:
-                st.warning("No cleaned text or sentiment data available for word cloud generation.")
-        
-        if viz_type == "Time Series" or viz_type == "All Visualizations":
-            st.subheader("Sentiment Trends Over Time")
-            
-            date_column = None
-            for col in ['date', 'created_at', 'Date Created']:
-                if col in df.columns:
-                    date_column = col
-                    break
-            
-            if date_column and 'sentiment' in df.columns:
-                time_fig = create_time_series(df)
-                if time_fig:
-                    st.plotly_chart(time_fig, use_container_width=True)
-                else:
-                    st.info("Could not generate time series chart. Check if date column contains valid dates.")
-            else:
-                st.warning("No appropriate date column found or sentiment data is missing.")
-        
-        if viz_type == "Heatmap" or viz_type == "All Visualizations":
-            st.subheader("Sentiment Heatmap Over Time")
-            
-            date_column = None
-            for col in ['date', 'created_at', 'Date Created']:
-                if col in df.columns:
-                    date_column = col
-                    break
-            
-            if date_column and 'sentiment' in df.columns:
-                heatmap_fig = create_sentiment_over_time_heatmap(df)
-                if heatmap_fig:
-                    st.plotly_chart(heatmap_fig, use_container_width=True)
-                else:
-                    st.info("Could not generate heatmap. Check if date column contains sufficient time data.")
-            else:
-                st.warning("No appropriate date column found or sentiment data is missing.")
-
-    elif section == "💡 Insights":
-        st.header("💡 Key Insights")
-        
-        if df is None:
-            st.error("No data available for insights")
-            return
-        
-        # Calculate insights
-        total_tweets = len(df)
-        
-        if 'sentiment' in df.columns:
-            positive_pct = (df['sentiment'] == 'positive').sum() / total_tweets * 100
-            negative_pct = (df['sentiment'] == 'negative').sum() / total_tweets * 100
-            neutral_pct = (df['sentiment'] == 'neutral').sum() / total_tweets * 100
-            sentiment_counts = df['sentiment'].value_counts()
+        if retweet_col and retweet_col in df.columns:
+            st.metric("Average Retweets", f"{avg_retweets:.1f}")
         else:
-            positive_pct = negative_pct = neutral_pct = 0
-            sentiment_counts = pd.Series(dtype='int64')
-
-        # Calculate engagement metrics from available columns
-        retweet_col = None
-        favorite_col = None
+            st.info("Retweet data not available")
         
-        for col in df.columns:
-            col_lower = str(col).lower()
-            if 'retweet' in col_lower or 'rt' in col_lower:
-                retweet_col = col
-            elif 'favorite' in col_lower or 'like' in col_lower or 'fav' in col_lower:
-                favorite_col = col
+        if favorite_col and favorite_col in df.columns:
+            st.metric("Average Favorites/Likes", f"{avg_favorites:.1f}")
+        else:
+            st.info("Favorite/Like data not available")
         
-        avg_retweets = df[retweet_col].mean() if retweet_col and retweet_col in df.columns else 0
-        avg_favorites = df[favorite_col].mean() if favorite_col and favorite_col in df.columns else 0
+        text_column = find_text_column(df)
+        if text_column and total_tweets > 0:
+            word_count = df[text_column].astype(str).str.split().str.len().sum()
+            st.metric("Total Words Analyzed", f"{word_count:,}")
+    
+    st.subheader("💡 Strategic Recommendations")
+    
+    with st.expander("Recommendations based on Sentiment Balance"):
+        st.markdown("""
+        **Actionable Steps:**
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("📈 Sentiment Overview")
-            st.metric("Overall Positive Sentiment", f"{positive_pct:.1f}%")
-            st.metric("Overall Negative Sentiment", f"{negative_pct:.1f}%")
-            st.metric("Overall Neutral Sentiment", f"{neutral_pct:.1f}%")
+        * **For Positive Peaks (Check Time Series):** Identify the **events/matches** that drove the most positive engagement and replicate successful communication strategies around those topics.
+        * **For Negative Spikes:** Immediately analyze the **negative word cloud** during those time periods to pinpoint specific issues (e.g., "referee," "VAR," "organization") and formulate targeted responses.
+        * **Content Strategy:** Use the **positive word cloud** to guide your team's content creation, focusing on terms and themes that resonate best with the audience.
+        * **Neutral Engagement:** For neutral sentiment, focus on providing more information and context to help users form stronger opinions.
+        """)
+    
+    # Export options
+    st.subheader("📤 Export Results")
+    if st.button("Generate Analysis Report"):
+        with st.spinner("Generating report..."):
+            overall_sentiment = 'POSITIVE' if positive_pct > negative_pct and positive_pct > neutral_pct else 'NEGATIVE' if negative_pct > positive_pct and negative_pct > neutral_pct else 'NEUTRAL'
             
-            # Sentiment summary
-            if positive_pct > negative_pct and positive_pct > neutral_pct:
-                st.success("🎉 Overall public sentiment leaning **POSITIVE** towards the World Cup.")
-            elif negative_pct > positive_pct and negative_pct > neutral_pct:
-                st.error("⚠️ Overall public sentiment leaning **NEGATIVE**. Investigate key negative topics (check Negative Word Cloud).")
-            else:
-                st.info("⚖️ Sentiment is largely **NEUTRAL** or balanced, indicating balanced discussion or lack of strong opinion.")
-        
-        with col2:
-            st.subheader("📊 Engagement Metrics")
+            report = f"""
+FIFA WORLD CUP 2022 SENTIMENT ANALYSIS REPORT
+Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+SUMMARY:
+- Total Tweets Analyzed: {total_tweets:,}
+- Overall Sentiment: {overall_sentiment}
+- Positive Sentiment: {positive_pct:.1f}% ({sentiment_counts.get('positive', 0):,} tweets)
+- Negative Sentiment: {negative_pct:.1f}% ({sentiment_counts.get('negative', 0):,} tweets)
+- Neutral Sentiment: {neutral_pct:.1f}% ({sentiment_counts.get('neutral', 0):,} tweets)
+- Average Retweets: {avg_retweets:.1f}
+- Average Favorites/Likes: {avg_favorites:.1f}
+
+KEY TAKEAWAYS:
+- The analysis provides valuable insights into public perception using NLTK VADER.
+- Focus on amplifying the positive themes identified in the word clouds.
+- Proactively address the issues highlighted by negative sentiment spikes.
+- Use time series analysis to correlate sentiment with specific World Cup events.
+
+RECOMMENDATIONS:
+1. Leverage positive sentiment peaks for marketing and engagement
+2. Address negative sentiment drivers through targeted communication
+3. Monitor neutral sentiment for opportunities to provide more information
+4. Use word cloud insights to guide content strategy
+            """
             
-            if retweet_col and retweet_col in df.columns:
-                st.metric("Average Retweets", f"{avg_retweets:.1f}")
-            else:
-                st.info("Retweet data not available")
-            
-            if favorite_col and favorite_col in df.columns:
-                st.metric("Average Favorites/Likes", f"{avg_favorites:.1f}")
-            else:
-                st.info("Favorite/Like data not available")
-            
-            text_column = find_text_column(df)
-            if text_column and total_tweets > 0:
-                word_count = df[text_column].astype(str).str.split().str.len().sum()
-                st.metric("Total Words Analyzed", f"{word_count:,}")
-        
-        st.subheader("💡 Strategic Recommendations")
-        
-        with st.expander("Recommendations based on Sentiment Balance"):
-            st.markdown("""
-            **Actionable Steps:**
-            
-            * **For Positive Peaks (Check Time Series):** Identify the **events/matches** that drove the most positive engagement and replicate successful communication strategies around those topics.
-            * **For Negative Spikes:** Immediately analyze the **negative word cloud** during those time periods to pinpoint specific issues (e.g., "referee," "VAR," "organization") and formulate targeted responses.
-            * **Content Strategy:** Use the **positive word cloud** to guide your team's content creation, focusing on terms and themes that resonate best with the audience.
-            * **Neutral Engagement:** For neutral sentiment, focus on providing more information and context to help users form stronger opinions.
-            """)
-        
-        # Export options
-        st.subheader("📤 Export Results")
-        if st.button("Generate Analysis Report"):
-            with st.spinner("Generating report..."):
-                overall_sentiment = 'POSITIVE' if positive_pct > negative_pct and positive_pct > neutral_pct else 'NEGATIVE' if negative_pct > positive_pct and negative_pct > neutral_pct else 'NEUTRAL'
-                
-                report = f"""
-    FIFA WORLD CUP 2022 SENTIMENT ANALYSIS REPORT
-    Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            st.download_button(
+                label="Download Full Summary Report (TXT)",
+                data=report,
+                file_name=f"fifa_sentiment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain"
+            )
 
-    SUMMARY:
-    - Total Tweets Analyzed: {total_tweets:,}
-    - Overall Sentiment: {overall_sentiment}
-    - Positive Sentiment: {positive_pct:.1f}% ({sentiment_counts.get('positive', 0):,} tweets)
-    - Negative Sentiment: {negative_pct:.1f}% ({sentiment_counts.get('negative', 0):,} tweets)
-    - Neutral Sentiment: {neutral_pct:.1f}% ({sentiment_counts.get('neutral', 0):,} tweets)
-    - Average Retweets: {avg_retweets:.1f}
-    - Average Favorites/Likes: {avg_favorites:.1f}
+# Footer
+st.sidebar.markdown("---")
+st.sidebar.markdown("### About")
+st.sidebar.info("""
+**FIFA World Cup 2022 Sentiment Analysis**
 
-    KEY TAKEAWAYS:
-    - The analysis provides valuable insights into public perception using NLTK VADER.
-    - Focus on amplifying the positive themes identified in the word clouds.
-    - Proactively address the issues highlighted by negative sentiment spikes.
-    - Use time series analysis to correlate sentiment with specific World Cup events.
+This app analyzes public sentiment from social media using the **NLTK VADER** lexicon. It provides real-time insights into fan engagement and perception during the tournament.
+""")
 
-    RECOMMENDATIONS:
-    1. Leverage positive sentiment peaks for marketing and engagement
-    2. Address negative sentiment drivers through targeted communication
-    3. Monitor neutral sentiment for opportunities to provide more information
-    4. Use word cloud insights to guide content strategy
-                """
-                
-                st.download_button(
-                    label="Download Full Summary Report (TXT)",
-                    data=report,
-                    file_name=f"fifa_sentiment_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                    mime="text/plain"
-                )
-
-    # Footer
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### About")
-    st.sidebar.info("""
-    **FIFA World Cup 2022 Sentiment Analysis**
-
-    This app analyzes public sentiment from social media using the **NLTK VADER** lexicon. It provides real-time insights into fan engagement and perception during the tournament.
-    """)
-
-    # Add refresh button
-    if st.sidebar.button("🔄 Refresh Data (Clear Cache)"):
-        st.cache_data.clear()
-        st.rerun()
-
-if __name__ == "__main__":
-    main()
+# Add refresh button
+if st.sidebar.button("🔄 Refresh Data (Clear Cache)"):
+    st.cache_data.clear()
+    st.rerun()
