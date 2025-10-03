@@ -26,45 +26,55 @@ sys.path.insert(0, str(project_root))
 def import_custom_modules():
     """Import custom modules with fallback functions"""
     try:
-        # Try to import from src
-        from src.data_cleaning import clean_tweet_data
-        st.success("✅ Successfully imported clean_tweet_data")
-        return clean_tweet_data
+        # Try to import the simple version first (no NLTK dependency)
+        from src.data_cleaning import clean_tweet_data_simple
+        st.success("✅ Successfully imported clean_tweet_data_simple")
+        return clean_tweet_data_simple
     except ImportError as e:
-        st.warning(f"❌ Could not import clean_tweet_data: {e}")
+        st.warning(f"❌ Could not import clean_tweet_data_simple: {e}")
         
-        # Define fallback function
-        def clean_tweet_data_fallback(df):
-            """Fallback data cleaning function"""
-            try:
-                df_clean = df.copy()
-                # Find text column
-                text_columns_to_try = ['text', 'Tweet', 'tweet', 'content', 'message']
-                text_column = None
-                
-                for col in text_columns_to_try:
-                    if col in df_clean.columns:
-                        text_column = col
-                        break
-                
-                if text_column:
-                    # Remove URLs
-                    df_clean['cleaned_text'] = df_clean[text_column].apply(lambda x: re.sub(r'http\S+', '', str(x)))
-                    # Remove mentions and hashtags but keep the words
-                    df_clean['cleaned_text'] = df_clean['cleaned_text'].apply(lambda x: re.sub(r'@\w+', '', x))
-                    df_clean['cleaned_text'] = df_clean['cleaned_text'].apply(lambda x: re.sub(r'#', '', x))
-                    # Remove special characters and numbers
-                    df_clean['cleaned_text'] = df_clean['cleaned_text'].apply(lambda x: re.sub(r'[^A-Za-z\s]', '', x))
-                    # Remove extra whitespace
-                    df_clean['cleaned_text'] = df_clean['cleaned_text'].apply(lambda x: ' '.join(x.split()))
-                    # Convert to lowercase
-                    df_clean['cleaned_text'] = df_clean['cleaned_text'].str.lower()
-                return df_clean
-            except Exception as e:
-                st.error(f"Error in data cleaning: {e}")
-                return df
-        
-        return clean_tweet_data_fallback
+        try:
+            # Fall back to regular version (with NLTK dependency)
+            from src.data_cleaning import clean_tweet_data
+            st.success("✅ Successfully imported clean_tweet_data")
+            return clean_tweet_data
+        except ImportError as e:
+            st.warning(f"❌ Could not import clean_tweet_data: {e}")
+            
+            # Define ultimate fallback function (basic cleaning logic)
+            def clean_tweet_data_fallback(df):
+                """Fallback data cleaning function"""
+                try:
+                    df_clean = df.copy()
+                    # Find text column
+                    text_columns_to_try = ['text', 'Tweet', 'tweet', 'content', 'message']
+                    text_column = None
+                    
+                    for col in text_columns_to_try:
+                        if col in df_clean.columns:
+                            text_column = col
+                            break
+                    
+                    if text_column:
+                        # Simple cleaning without any external dependencies
+                        def simple_clean(text):
+                            if pd.isna(text):
+                                return ""
+                            text = str(text).lower()
+                            text = re.sub(r'http\S+', '', text)
+                            text = re.sub(r'@\w+', '', text)
+                            text = re.sub(r'#', '', text)
+                            text = re.sub(r'[^A-Za-z\s]', '', text)
+                            text = ' '.join(text.split())
+                            return text
+                        
+                        df_clean['cleaned_text'] = df_clean[text_column].apply(simple_clean)
+                    return df_clean
+                except Exception as e:
+                    st.error(f"Error in data cleaning: {e}")
+                    return df
+            
+            return clean_tweet_data_fallback
 
 def import_sentiment_analysis():
     """Import sentiment analysis with fallback"""
@@ -143,6 +153,7 @@ def import_visualization():
             except Exception as e:
                 st.error(f"Error creating sentiment chart: {e}")
                 return None
+            return None # Added explicit return
         
         def create_wordcloud_fallback(df, sentiment_type='all'):
             try:
@@ -176,6 +187,7 @@ def import_visualization():
             except Exception as e:
                 st.error(f"Error creating word cloud: {e}")
                 return None
+            return None # Added explicit return
         
         def create_time_series_fallback(df):
             try:
@@ -213,6 +225,7 @@ def import_visualization():
             except Exception as e:
                 st.error(f"Error creating time series: {e}")
                 return None
+            return None # Added explicit return
         
         return create_sentiment_chart_fallback, create_wordcloud_fallback, create_time_series_fallback
 
