@@ -57,7 +57,7 @@ A Streamlit app that analyzes public sentiment from World Cup tweets using NLTK 
 - Exportable reports
 
 ## Live Demo
-[Add your Streamlit Cloud URL here after deployment]
+https://fifa-world-cup-sentiment-analysis-byldkql5syz3qrbvdvspku.streamlit.app/
 
 ## Local Development
 ```bash
