@@ -6,14 +6,29 @@ import sys
 import os
 import re
 import logging
+import ssl
 from typing import Dict, List
 from pathlib import Path
 from datetime import datetime
 
-# --- Visualization Imports ---
-import matplotlib.pyplot as plt
-import plotly.express as px
-import plotly.graph_objects as go
+# --- Deployment Configuration ---
+import subprocess
+
+# Install required packages for Streamlit Cloud deployment
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib"])
+    import matplotlib.pyplot as plt
+
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "plotly"])
+    import plotly.express as px
+    import plotly.graph_objects as go
+
 # Suppress matplotlib warnings/output which can interfere with Streamlit
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -21,11 +36,39 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # --- NLTK Imports and Enhanced Cloud Deployment Setup ---
 import nltk
 
+# Fix SSL certificate issues for NLTK downloads
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
+
+# Download required NLTK data
+@st.cache_resource
+def download_nltk_resources():
+    """Download required NLTK resources with caching"""
+    try:
+        nltk.download('punkt_tab', quiet=True)
+        nltk.download('punkt', quiet=True)
+        nltk.download('stopwords', quiet=True)
+        nltk.download('vader_lexicon', quiet=True)
+        nltk.download('wordnet', quiet=True)
+        st.sidebar.success("✅ NLTK resources downloaded successfully")
+        return True
+    except Exception as e:
+        st.error(f"Error downloading NLTK resources: {e}")
+        return False
+
 # ENHANCED NLTK Setup - Combining both approaches for maximum reliability
 def setup_nltk():
     """Ensure NLTK data is available for cloud deployment - Enhanced version"""
     try:
-        # Create NLTK data directory in a writable location
+        # First try to download using the cached resource function
+        if download_nltk_resources():
+            return True
+            
+        # Fallback: Create NLTK data directory in a writable location
         nltk_data_dir = os.path.join(os.getcwd(), 'nltk_data')
         os.makedirs(nltk_data_dir, exist_ok=True)
         
@@ -39,49 +82,65 @@ def setup_nltk():
             'stopwords', 
             'vader_lexicon', 
             'wordnet',
-            'punkt_tab'  # For newer NLTK versions
+            'punkt_tab'
         ]
         
+        success_count = 0
         for package in packages:
             try:
-                if package == 'punkt':
-                    nltk.data.find(f'tokenizers/{package}')
-                elif package == 'punkt_tab':
+                if package in ['punkt', 'punkt_tab']:
                     nltk.data.find(f'tokenizers/{package}')
                 else:
                     nltk.data.find(f'corpora/{package}')
                 print(f"✅ {package} already available")
+                success_count += 1
             except LookupError:
                 print(f"📥 Downloading {package}...")
                 try:
                     nltk.download(package, download_dir=nltk_data_dir, quiet=True)
                     print(f"✅ Successfully downloaded {package}")
+                    success_count += 1
                 except Exception as e:
                     print(f"⚠️ Failed to download {package}: {e}")
+        
+        return success_count > 0
                     
     except Exception as e:
         print(f"⚠️ NLTK setup warning: {e}")
+        return False
 
 # Run setup at import time
-setup_nltk()
+nltk_setup_success = setup_nltk()
 
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 
+# Install and import wordcloud with deployment handling
 try:
     from wordcloud import WordCloud
 except ImportError:
-    st.warning("WordCloud library not found. Please install it (`pip install wordcloud`) to enable word cloud visualizations.")
-    WordCloud = None
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "wordcloud"])
+        from wordcloud import WordCloud
+        st.sidebar.success("✅ WordCloud installed successfully")
+    except Exception as e:
+        st.warning(f"WordCloud installation failed: {e}. Word clouds will be disabled.")
+        WordCloud = None
 
 # Configuration and Initialization
 logging.basicConfig(level=logging.INFO)
 
 # Initialize NLTK components once
 try:
-    analyzer = SentimentIntensityAnalyzer()
-    STOP_WORDS = set(stopwords.words('english'))
+    if nltk_setup_success:
+        analyzer = SentimentIntensityAnalyzer()
+        STOP_WORDS = set(stopwords.words('english'))
+        st.sidebar.success("✅ NLTK components initialized successfully")
+    else:
+        st.error("❌ NLTK setup failed. Some features may not work properly.")
+        analyzer = None
+        STOP_WORDS = set()
 except Exception as e:
     st.error(f"Error initializing NLTK components: {e}")
     analyzer = None
@@ -403,14 +462,19 @@ section = st.sidebar.radio(
     ["🏠 Dashboard", "📊 Data Overview", "😊 Sentiment Analysis", "📈 Visualizations", "💡 Insights"]
 )
 
-# Load data function with robust file handling
+# Load data function with robust file handling for deployment
 @st.cache_data
 def load_data():
+    # Try multiple possible data paths for deployment compatibility
     data_sources = [
-        'data/processed/processed_tweets.csv',
         'data/raw/fifa_world_cup_2022_tweets.csv',
-        'processed_tweets.csv',  # Try root directory
-        'fifa_world_cup_2022_tweets.csv'  # Try root directory
+        'data/processed/processed_tweets.csv',
+        '../data/raw/fifa_world_cup_2022_tweets.csv',  # Parent directory
+        '../data/processed/processed_tweets.csv',      # Parent directory  
+        './fifa_world_cup_2022_tweets.csv',           # Current directory
+        './processed_tweets.csv',                      # Current directory
+        'app/data/raw/fifa_world_cup_2022_tweets.csv', # App subdirectory
+        'app/data/processed/processed_tweets.csv'      # App subdirectory
     ]
     
     for data_file in data_sources:
@@ -429,6 +493,7 @@ def load_data():
     To use your own data, make sure you have either:
     - `data/raw/fifa_world_cup_2022_tweets.csv` or
     - `data/processed/processed_tweets.csv`
+    in your project directory.
     """)
     
     # Create comprehensive sample data
@@ -473,10 +538,6 @@ df = load_data()
 
 # Remove duplicate columns immediately after loading (initial cleanup)
 df = remove_duplicate_columns(df)
-
-# --- SIMPLIFIED COLUMN STANDARDIZATION ---
-# Skip complex renaming since data already has good structure
-st.sidebar.info("✅ Using optimized column structure")
 
 # Process data (Cleaning and Sentiment Analysis)
 if df is not None and ('cleaned_text' not in df.columns or 'sentiment' not in df.columns):
